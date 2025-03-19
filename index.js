@@ -4,18 +4,31 @@ const moment = require('moment');
 const fs = require('fs');
 const path = require('path');
 
-// Initialize Octokit with GitHub token
-let octokit = new Octokit({
-    auth: process.env.GITHUB_TOKEN,
-});
-
-const repositories = (process.env.REPOSITORIES || '').split(',').map(repo => repo.trim()).filter(Boolean);
+// Initialize environment variables
+const githubToken = process.env.GITHUB_TOKEN;
 const organization = process.env.GITHUB_ORG;
-const REPORTS_BASE_DIR = 'reports'; // Base directory for all reports
+const repositories = (process.env.REPOSITORIES || '').split(',').map(repo => repo.trim()).filter(Boolean);
+const reportsBaseDir = 'reports'; // Base directory for all reports
+
+// Validate required environment variables
+if (!githubToken) {
+    throw new Error('GITHUB_TOKEN must be set in .env file');
+}
 
 if (!organization || repositories.length === 0) {
     throw new Error('GITHUB_ORG and REPOSITORIES must be set in .env file');
 }
+
+// Initialize Octokit with GitHub token
+let octokit = new Octokit({
+    auth: githubToken,
+});
+
+// Common request headers
+const defaultHeaders = {
+    'authorization': `token ${githubToken}`,
+    'accept': 'application/vnd.github.v3+json'
+};
 
 // Allow setting a custom Octokit instance for testing
 function setOctokit(instance) {
@@ -26,11 +39,11 @@ function setOctokit(instance) {
 function ensureReportDirectories(date) {
     const year = date.format('YYYY');
     const month = date.format('MM-MMMM'); // e.g., "02-February"
-    const yearDir = path.join(REPORTS_BASE_DIR, year);
+    const yearDir = path.join(reportsBaseDir, year);
     const monthDir = path.join(yearDir, month);
 
     // Create directories if they don't exist
-    [REPORTS_BASE_DIR, yearDir, monthDir].forEach(dir => {
+    [reportsBaseDir, yearDir, monthDir].forEach(dir => {
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
@@ -52,20 +65,33 @@ function getReportFilename(date) {
 // Fetch PRs with optimized filtering
 async function fetchPRs(repoName) {
     const lastWeekDate = getLastWeekDate().format();
+
+    // Skip empty repository names
+    if (!repoName || repoName.trim() === '') {
+        return [];
+    }
+
+    // Trim the repository name to remove whitespace
+    const repo = repoName.trim();
+
     try {
-        const { data: prs } = await octokit.rest.pulls.list({
+        const { data: prs } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
             owner: organization,
-            repo: repoName,
+            repo: repo,
             state: 'all',
             sort: 'updated',
             direction: 'desc',
             per_page: 100,
-            since: lastWeekDate
+            since: lastWeekDate,
+            headers: defaultHeaders
         });
 
-        return prs.map(pr => ({ ...pr, repoName }));
+        return prs.map(pr => ({ ...pr, repoName: repo }));
     } catch (error) {
-        console.error(`Error fetching PRs for ${repoName}:`, error.message);
+        console.error(`Error fetching PRs for ${repo}:`, error.message);
+        if (error.response?.status) {
+            console.error(`Status code: ${error.response.status}`);
+        }
         return [];
     }
 }
@@ -73,24 +99,28 @@ async function fetchPRs(repoName) {
 // Batch fetch reviews and comments for multiple PRs
 async function fetchPRDetails(repoName, prNumbers) {
     const details = new Map();
+    const repo = repoName.trim();
 
     for (const prNumber of prNumbers) {
         try {
             const [comments, reviewComments, reviews] = await Promise.all([
-                octokit.rest.issues.listComments({
+                octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                     owner: organization,
-                    repo: repoName,
-                    issue_number: prNumber
+                    repo: repo,
+                    issue_number: prNumber,
+                    headers: defaultHeaders
                 }),
-                octokit.rest.pulls.listReviewComments({
+                octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
                     owner: organization,
-                    repo: repoName,
-                    pull_number: prNumber
+                    repo: repo,
+                    pull_number: prNumber,
+                    headers: defaultHeaders
                 }),
-                octokit.rest.pulls.listReviews({
+                octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
                     owner: organization,
-                    repo: repoName,
-                    pull_number: prNumber
+                    repo: repo,
+                    pull_number: prNumber,
+                    headers: defaultHeaders
                 })
             ]);
 
@@ -109,7 +139,10 @@ async function fetchPRDetails(repoName, prNumbers) {
                 changesRequested
             });
         } catch (error) {
-            console.error(`Error fetching details for PR #${prNumber}:`, error);
+            console.error(`Error fetching details for PR #${prNumber}:`, error.message);
+            if (error.response?.status) {
+                console.error(`Status code: ${error.response.status}`);
+            }
             details.set(prNumber, {
                 totalComments: 0,
                 reviewComments: 0,
