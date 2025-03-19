@@ -11,12 +11,12 @@ const repositories = (process.env.REPOSITORIES || '').split(',').map(repo => rep
 const reportsBaseDir = 'reports'; // Base directory for all reports
 
 // Validate required environment variables
-if (!githubToken) {
-    throw new Error('GITHUB_TOKEN must be set in .env file');
-}
-
 if (!organization || repositories.length === 0) {
     throw new Error('GITHUB_ORG and REPOSITORIES must be set in .env file');
+}
+
+if (!githubToken) {
+    throw new Error('GITHUB_TOKEN must be set in .env file');
 }
 
 // Initialize Octokit with GitHub token
@@ -75,15 +75,14 @@ async function fetchPRs(repoName) {
     const repo = repoName.trim();
 
     try {
-        const { data: prs } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+        const { data: prs } = await octokit.rest.pulls.list({
             owner: organization,
             repo: repo,
             state: 'all',
             sort: 'updated',
             direction: 'desc',
             per_page: 100,
-            since: lastWeekDate,
-            headers: defaultHeaders
+            since: lastWeekDate
         });
 
         return prs.map(pr => ({ ...pr, repoName: repo }));
@@ -104,23 +103,20 @@ async function fetchPRDetails(repoName, prNumbers) {
     for (const prNumber of prNumbers) {
         try {
             const [comments, reviewComments, reviews] = await Promise.all([
-                octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                octokit.rest.issues.listComments({
                     owner: organization,
                     repo: repo,
-                    issue_number: prNumber,
-                    headers: defaultHeaders
+                    issue_number: prNumber
                 }),
-                octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
+                octokit.rest.pulls.listReviewComments({
                     owner: organization,
                     repo: repo,
-                    pull_number: prNumber,
-                    headers: defaultHeaders
+                    pull_number: prNumber
                 }),
-                octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
+                octokit.rest.pulls.listReviews({
                     owner: organization,
                     repo: repo,
-                    pull_number: prNumber,
-                    headers: defaultHeaders
+                    pull_number: prNumber
                 })
             ]);
 

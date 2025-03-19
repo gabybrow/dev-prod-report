@@ -35,8 +35,9 @@ describe('GitHub Report Generator', () => {
         jest.clearAllMocks();
         process.env = { ...originalEnv };
 
-        // Setup mock Octokit instance
+        // Setup mock Octokit instance with both rest and request methods
         mockOctokit = {
+            request: jest.fn(),
             rest: {
                 pulls: {
                     list: jest.fn(),
@@ -74,6 +75,7 @@ describe('GitHub Report Generator', () => {
 
         it('should handle empty repositories list', () => {
             jest.resetModules();
+            process.env.GITHUB_TOKEN = 'test-token';
             process.env.GITHUB_ORG = 'test-owner';
             process.env.REPOSITORIES = '';
 
@@ -115,6 +117,8 @@ describe('GitHub Report Generator', () => {
     describe('PR Fetching', () => {
         it('should fetch PRs with correct parameters', async () => {
             const lastWeekDate = getLastWeekDate().format();
+            mockOctokit.rest.pulls.list.mockResolvedValueOnce({ data: [] });
+
             await fetchPRs('test-repo');
 
             expect(mockOctokit.rest.pulls.list).toHaveBeenCalledWith({
@@ -129,13 +133,13 @@ describe('GitHub Report Generator', () => {
         });
 
         it('should handle PR fetch errors gracefully', async () => {
-            mockOctokit.rest.pulls.list.mockRejectedValue(new Error('API Error'));
+            mockOctokit.request.mockRejectedValue(new Error('API Error'));
             const result = await fetchPRs('test-repo');
             expect(result).toEqual([]);
         });
 
         it('should handle rate limiting errors', async () => {
-            mockOctokit.rest.pulls.list.mockRejectedValue({
+            mockOctokit.request.mockRejectedValue({
                 status: 403,
                 message: 'API rate limit exceeded'
             });
@@ -144,7 +148,7 @@ describe('GitHub Report Generator', () => {
         });
 
         it('should handle authentication errors', async () => {
-            mockOctokit.rest.pulls.list.mockRejectedValue({
+            mockOctokit.request.mockRejectedValue({
                 status: 401,
                 message: 'Bad credentials'
             });
@@ -162,6 +166,7 @@ describe('GitHub Report Generator', () => {
             mockOctokit.rest.pulls.listReviews.mockResolvedValue(mockReviews);
 
             const details = await fetchPRDetails('test-repo', [123]);
+
             expect(details.get(123)).toEqual({
                 totalComments: 3,
                 reviewComments: 1,
@@ -173,9 +178,7 @@ describe('GitHub Report Generator', () => {
         });
 
         it('should handle PR details fetch errors', async () => {
-            mockOctokit.rest.issues.listComments.mockRejectedValue(new Error('API Error'));
-            mockOctokit.rest.pulls.listReviewComments.mockRejectedValue(new Error('API Error'));
-            mockOctokit.rest.pulls.listReviews.mockRejectedValue(new Error('API Error'));
+            mockOctokit.request.mockRejectedValue(new Error('API Error'));
 
             const details = await fetchPRDetails('test-repo', [123]);
             expect(details.get(123)).toEqual({
