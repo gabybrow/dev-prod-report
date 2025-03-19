@@ -32,5 +32,14 @@ module.exports = {
         'text',
         'lcov',
         'html'
-    ]
+    ],
+
+    collectCoverage: true,
+    collectCoverageFrom: [
+        '*.js',
+        '!jest.config.js'
+    ],
+
+    // Add setup file for console mocks
+    setupFilesAfterEnv: ['./__tests__/setup.js']
 }; 

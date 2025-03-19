@@ -50,8 +50,8 @@ cd dev-prod-report
 2. Create a `.env` file in the root directory:
 ```env
 GITHUB_TOKEN=your_github_token
-GITHUB_OWNER=your_organization_or_username
-GITHUB_REPO=repo1,repo2,repo3
+GITHUB_ORG=your_organization_name
+REPOSITORIES=repo1,repo2,repo3
 ```
 
 ### Local Development (one-time run)
