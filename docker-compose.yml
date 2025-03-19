@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  github-report:
+    build: .
+    volumes:
+      - ./reports:/usr/src/app/reports
+      - ./logs:/usr/src/app/logs
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_OWNER=${GITHUB_OWNER}
+      - GITHUB_REPO=${GITHUB_REPO}
+    restart: unless-stopped 
