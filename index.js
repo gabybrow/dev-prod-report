@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Initialize Octokit with GitHub token
-const octokit = new Octokit({
+let octokit = new Octokit({
     auth: process.env.GITHUB_TOKEN,
 });
 
@@ -16,6 +16,11 @@ const REPORTS_BASE_DIR = 'reports'; // Base directory for all reports
 if (!repoOwner || repositories.length === 0) {
     console.error('Error: REPO_OWNER and REPOSITORIES must be set in .env file');
     process.exit(1);
+}
+
+// Allow setting a custom Octokit instance for testing
+function setOctokit(instance) {
+    octokit = instance;
 }
 
 // Ensure reports directory structure exists
@@ -99,6 +104,78 @@ async function fetchPRDetails(repoName, prNumbers) {
     }));
 
     return prDetails;
+}
+
+// Calculate PR metrics for a specific date range
+async function calculatePRMetrics(owner, repo, startDate, endDate) {
+    const prs = await fetchPRs(repo);
+    const metrics = {
+        newPRs: 0,
+        mergedPRs: 0,
+        openPRs: 0,
+        avgTimeToMerge: 0,
+        contributors: {}
+    };
+
+    prs.forEach(pr => {
+        const createdAt = moment(pr.created_at);
+        const mergedAt = pr.merged_at ? moment(pr.merged_at) : null;
+        const author = pr.user.login;
+
+        if (!metrics.contributors[author]) {
+            metrics.contributors[author] = {
+                newPRs: 0,
+                mergedPRs: 0,
+                openPRs: 0,
+                comments: 0
+            };
+        }
+
+        if (createdAt.isBetween(startDate, endDate)) {
+            metrics.newPRs++;
+            metrics.contributors[author].newPRs++;
+        }
+
+        if (pr.state === 'open') {
+            metrics.openPRs++;
+            metrics.contributors[author].openPRs++;
+        }
+
+        if (mergedAt && mergedAt.isBetween(startDate, endDate)) {
+            metrics.mergedPRs++;
+            metrics.contributors[author].mergedPRs++;
+            metrics.avgTimeToMerge += mergedAt.diff(createdAt, 'hours');
+        }
+    });
+
+    if (metrics.mergedPRs > 0) {
+        metrics.avgTimeToMerge /= metrics.mergedPRs;
+    }
+
+    return metrics;
+}
+
+// Generate a formatted report from metrics
+async function generateReport(owner, repo, metrics) {
+    const reportLines = [
+        '# GitHub Activity Report\n',
+        '\n## Summary\n',
+        `- New PRs: ${metrics.newPRs}`,
+        `- Merged PRs: ${metrics.mergedPRs}`,
+        `- Open PRs: ${metrics.openPRs}`,
+        `- Average Time to Merge: ${metrics.avgTimeToMerge.toFixed(1)} hours\n`,
+        '\n## Contributors\n',
+        '| Contributor | New PRs | Merged PRs | Open PRs | Comments |',
+        '|------------|----------|------------|-----------|----------|'
+    ];
+
+    Object.entries(metrics.contributors).forEach(([author, stats]) => {
+        reportLines.push(
+            `| ${author} | ${stats.newPRs} | ${stats.mergedPRs} | ${stats.openPRs} | ${stats.comments} |`
+        );
+    });
+
+    return reportLines.join('\n');
 }
 
 // Generate weekly PR report
@@ -282,10 +359,24 @@ async function generateWeeklyPRReport() {
     }
 }
 
-// If running directly (not imported as module), generate report
+// Export all functions
+module.exports = {
+    // Public API
+    calculatePRMetrics,
+    generateReport,
+    setOctokit,
+
+    // Internal functions (for testing)
+    _internal: {
+        fetchPRs,
+        fetchPRDetails,
+        ensureReportDirectories,
+        getLastWeekDate,
+        getReportFilename
+    }
+};
+
+// Only run if this is the main module
 if (require.main === module) {
-    generateWeeklyPRReport().catch(error => {
-        console.error('Fatal error:', error);
-        process.exit(1);
-    });
+    generateWeeklyPRReport().catch(console.error);
 }

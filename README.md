@@ -101,6 +101,36 @@ docker run -d \
 
 The report will automatically run every Saturday at 9:00 AM in your server's timezone.
 
+## Testing
+
+The project includes a comprehensive test suite using Jest. Tests cover the core functionality including PR metrics calculation and report generation.
+
+### Running Tests
+
+```bash
+# Run tests once
+npm test
+
+# Run tests in watch mode (useful during development)
+npm run test:watch
+
+# Run tests with coverage report
+npm run test:coverage
+```
+
+The coverage report will be generated in the `coverage` directory and includes:
+- HTML report (`coverage/lcov-report/index.html`)
+- Console summary
+- Detailed line-by-line coverage information
+
+### Test Structure
+
+Tests are organized in the `__tests__` directory and cover:
+- PR metrics calculation
+- Report generation
+- GitHub API interaction (mocked)
+- Data transformation and formatting
+
 ## Report Structure
 
 Reports are saved in the `reports` directory, organized by year and month:
