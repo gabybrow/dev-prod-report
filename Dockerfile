@@ -19,7 +19,7 @@ COPY . .
 RUN mkdir -p reports logs
 
 # Add crontab file
-RUN echo "0 9 * * 6 cd /usr/src/app && /usr/local/bin/node new-report.js >> /usr/src/app/logs/report.log 2>&1" > /etc/cron.d/report-cron
+RUN echo "0 9 * * 6 cd /usr/src/app && /usr/local/bin/node index.js >> /usr/src/app/logs/report.log 2>&1" > /etc/cron.d/report-cron
 RUN chmod 0644 /etc/cron.d/report-cron
 RUN crontab /etc/cron.d/report-cron
 

@@ -63,7 +63,7 @@ If you want to run the report locally without Docker:
 npm install
 
 # Generate report
-node new-report.js
+node index.js
 ```
 
 The report will be generated in the `reports` directory following the same structure as the Docker setup.
@@ -72,7 +72,6 @@ The report will be generated in the `reports` directory following the same struc
 
 3. Build and run the container:
 
-### For Development (run once)
 ```bash
 # Build the image
 docker build -t github-report .
@@ -82,7 +81,7 @@ docker run --rm \
   -v $(pwd)/reports:/usr/src/app/reports \
   -v $(pwd)/logs:/usr/src/app/logs \
   --env-file .env \
-  github-report node new-report.js
+  github-report node index.js
 ```
 
 ### For Production (scheduled runs)
@@ -169,4 +168,4 @@ ls -l logs/
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details.
