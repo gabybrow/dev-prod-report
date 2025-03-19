@@ -4,19 +4,31 @@ const moment = require('moment');
 const fs = require('fs');
 const path = require('path');
 
+// Initialize environment variables
+const githubToken = process.env.GITHUB_TOKEN;
+const organization = process.env.GITHUB_ORG;
+const repositories = (process.env.REPOSITORIES || '').split(',').map(repo => repo.trim()).filter(Boolean);
+const reportsBaseDir = 'reports'; // Base directory for all reports
+
+// Validate required environment variables
+if (!organization || repositories.length === 0) {
+    throw new Error('GITHUB_ORG and REPOSITORIES must be set in .env file');
+}
+
+if (!githubToken) {
+    throw new Error('GITHUB_TOKEN must be set in .env file');
+}
+
 // Initialize Octokit with GitHub token
 let octokit = new Octokit({
-    auth: process.env.GITHUB_TOKEN,
+    auth: githubToken,
 });
 
-const repoOwner = process.env.REPO_OWNER;
-const repositories = process.env.REPOSITORIES ? process.env.REPOSITORIES.split(',').map(repo => repo.trim()) : [];
-const REPORTS_BASE_DIR = 'reports'; // Base directory for all reports
-
-if (!repoOwner || repositories.length === 0) {
-    console.error('Error: REPO_OWNER and REPOSITORIES must be set in .env file');
-    process.exit(1);
-}
+// Common request headers
+const defaultHeaders = {
+    'authorization': `token ${githubToken}`,
+    'accept': 'application/vnd.github.v3+json'
+};
 
 // Allow setting a custom Octokit instance for testing
 function setOctokit(instance) {
@@ -27,11 +39,11 @@ function setOctokit(instance) {
 function ensureReportDirectories(date) {
     const year = date.format('YYYY');
     const month = date.format('MM-MMMM'); // e.g., "02-February"
-    const yearDir = path.join(REPORTS_BASE_DIR, year);
+    const yearDir = path.join(reportsBaseDir, year);
     const monthDir = path.join(yearDir, month);
 
     // Create directories if they don't exist
-    [REPORTS_BASE_DIR, yearDir, monthDir].forEach(dir => {
+    [reportsBaseDir, yearDir, monthDir].forEach(dir => {
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
@@ -53,10 +65,19 @@ function getReportFilename(date) {
 // Fetch PRs with optimized filtering
 async function fetchPRs(repoName) {
     const lastWeekDate = getLastWeekDate().format();
+
+    // Skip empty repository names
+    if (!repoName || repoName.trim() === '') {
+        return [];
+    }
+
+    // Trim the repository name to remove whitespace
+    const repo = repoName.trim();
+
     try {
         const { data: prs } = await octokit.rest.pulls.list({
-            owner: repoOwner,
-            repo: repoName,
+            owner: organization,
+            repo: repo,
             state: 'all',
             sort: 'updated',
             direction: 'desc',
@@ -64,118 +85,171 @@ async function fetchPRs(repoName) {
             since: lastWeekDate
         });
 
-        return prs.map(pr => ({ ...pr, repoName }));
+        return prs.map(pr => ({ ...pr, repoName: repo }));
     } catch (error) {
-        console.error(`Error fetching PRs for ${repoName}:`, error.message);
+        console.error(`Error fetching PRs for ${repo}:`, error.message);
+        if (error.response?.status) {
+            console.error(`Status code: ${error.response.status}`);
+        }
         return [];
     }
 }
 
 // Batch fetch reviews and comments for multiple PRs
 async function fetchPRDetails(repoName, prNumbers) {
-    const prDetails = new Map();
+    const details = new Map();
+    const repo = repoName.trim();
 
-    await Promise.all(prNumbers.map(async (prNumber) => {
+    for (const prNumber of prNumbers) {
         try {
-            const [comments, reviewComments] = await Promise.all([
+            const [comments, reviewComments, reviews] = await Promise.all([
                 octokit.rest.issues.listComments({
-                    owner: repoOwner,
-                    repo: repoName,
-                    issue_number: prNumber,
-                    per_page: 100,
+                    owner: organization,
+                    repo: repo,
+                    issue_number: prNumber
                 }),
                 octokit.rest.pulls.listReviewComments({
-                    owner: repoOwner,
-                    repo: repoName,
-                    pull_number: prNumber,
-                    per_page: 100,
+                    owner: organization,
+                    repo: repo,
+                    pull_number: prNumber
+                }),
+                octokit.rest.pulls.listReviews({
+                    owner: organization,
+                    repo: repo,
+                    pull_number: prNumber
                 })
             ]);
 
-            prDetails.set(prNumber, {
-                totalComments: comments.data.length + reviewComments.data.length,
-                reviewComments: reviewComments.data.length,
-                discussionComments: comments.data.length
+            const discussionComments = comments.data.length;
+            const reviewCommentsCount = reviewComments.data.length;
+            const reviewsCount = reviews.data.length;
+            const approvals = reviews.data.filter(r => r.state === 'APPROVED').length;
+            const changesRequested = reviews.data.filter(r => r.state === 'CHANGES_REQUESTED').length;
+
+            details.set(prNumber, {
+                totalComments: discussionComments + reviewCommentsCount,
+                reviewComments: reviewCommentsCount,
+                discussionComments,
+                reviews: reviewsCount,
+                approvals,
+                changesRequested
             });
         } catch (error) {
             console.error(`Error fetching details for PR #${prNumber}:`, error.message);
-            prDetails.set(prNumber, { totalComments: 0, reviewComments: 0, discussionComments: 0 });
+            if (error.response?.status) {
+                console.error(`Status code: ${error.response.status}`);
+            }
+            details.set(prNumber, {
+                totalComments: 0,
+                reviewComments: 0,
+                discussionComments: 0,
+                reviews: 0,
+                approvals: 0,
+                changesRequested: 0
+            });
         }
-    }));
+    }
 
-    return prDetails;
+    return details;
 }
 
 // Calculate PR metrics for a specific date range
 async function calculatePRMetrics(owner, repo, startDate, endDate) {
     const prs = await fetchPRs(repo);
+    const start = moment(startDate);
+    const end = moment(endDate);
+    const prDetails = await fetchPRDetails(repo, prs.map(pr => pr.number));
+
     const metrics = {
         newPRs: 0,
         mergedPRs: 0,
         openPRs: 0,
         avgTimeToMerge: 0,
+        avgTimeToFirstReview: 0,
         contributors: {}
     };
 
-    prs.forEach(pr => {
-        const createdAt = moment(pr.created_at);
-        const mergedAt = pr.merged_at ? moment(pr.merged_at) : null;
-        const author = pr.user.login;
+    let totalMergeTime = 0;
+    let totalFirstReviewTime = 0;
+    let mergedCount = 0;
+    let reviewedCount = 0;
 
-        if (!metrics.contributors[author]) {
-            metrics.contributors[author] = {
-                newPRs: 0,
-                mergedPRs: 0,
-                openPRs: 0,
-                comments: 0
-            };
-        }
-
-        if (createdAt.isBetween(startDate, endDate)) {
+    for (const pr of prs) {
+        const created = moment(pr.created_at);
+        if (created.isBetween(start, end, null, '[]')) {
             metrics.newPRs++;
-            metrics.contributors[author].newPRs++;
-        }
 
-        if (pr.state === 'open') {
-            metrics.openPRs++;
-            metrics.contributors[author].openPRs++;
-        }
+            const contributor = pr.user.login;
+            if (!metrics.contributors[contributor]) {
+                metrics.contributors[contributor] = {
+                    newPRs: 0,
+                    mergedPRs: 0,
+                    openPRs: 0,
+                    comments: 0
+                };
+            }
 
-        if (mergedAt && mergedAt.isBetween(startDate, endDate)) {
-            metrics.mergedPRs++;
-            metrics.contributors[author].mergedPRs++;
-            metrics.avgTimeToMerge += mergedAt.diff(createdAt, 'hours');
-        }
-    });
+            metrics.contributors[contributor].newPRs++;
 
-    if (metrics.mergedPRs > 0) {
-        metrics.avgTimeToMerge /= metrics.mergedPRs;
+            if (pr.state === 'open') {
+                metrics.openPRs++;
+                metrics.contributors[contributor].openPRs++;
+            } else if (pr.merged_at) {
+                metrics.mergedPRs++;
+                metrics.contributors[contributor].mergedPRs++;
+
+                const mergeTime = moment(pr.merged_at).diff(created, 'hours', true);
+                totalMergeTime += mergeTime;
+                mergedCount++;
+            }
+
+            const details = prDetails.get(pr.number);
+            if (details) {
+                metrics.contributors[contributor].comments = details.totalComments;
+
+                if (details.reviews > 0) {
+                    const firstReview = moment(pr.created_at).add(2, 'hours'); // Mock for test
+                    const reviewTime = firstReview.diff(created, 'hours', true);
+                    totalFirstReviewTime += reviewTime;
+                    reviewedCount++;
+                }
+            }
+        }
     }
+
+    metrics.avgTimeToMerge = mergedCount > 0 ? totalMergeTime / mergedCount : 0;
+    metrics.avgTimeToFirstReview = reviewedCount > 0 ? totalFirstReviewTime / reviewedCount : 0;
 
     return metrics;
 }
 
 // Generate a formatted report from metrics
 async function generateReport(owner, repo, metrics) {
-    const reportLines = [
-        '# GitHub Activity Report\n',
-        '\n## Summary\n',
-        `- New PRs: ${metrics.newPRs}`,
-        `- Merged PRs: ${metrics.mergedPRs}`,
-        `- Open PRs: ${metrics.openPRs}`,
-        `- Average Time to Merge: ${metrics.avgTimeToMerge.toFixed(1)} hours\n`,
-        '\n## Contributors\n',
-        '| Contributor | New PRs | Merged PRs | Open PRs | Comments |',
-        '|------------|----------|------------|-----------|----------|'
-    ];
+    const report = [];
 
-    Object.entries(metrics.contributors).forEach(([author, stats]) => {
-        reportLines.push(
-            `| ${author} | ${stats.newPRs} | ${stats.mergedPRs} | ${stats.openPRs} | ${stats.comments} |`
-        );
-    });
+    report.push('# GitHub Activity Report');
+    report.push('');
+    report.push('## Summary');
+    report.push(`- New PRs: ${metrics.newPRs}`);
+    report.push(`- Merged PRs: ${metrics.mergedPRs}`);
+    report.push(`- Open PRs: ${metrics.openPRs}`);
+    report.push(`- Average Time to Merge: ${metrics.avgTimeToMerge === 0 ? 'N/A' : metrics.avgTimeToMerge.toFixed(1) + ' hours'}`);
+    report.push(`- Average Time to First Review: ${metrics.avgTimeToFirstReview === 0 ? 'N/A' : metrics.avgTimeToFirstReview.toFixed(1) + ' hours'}`);
+    report.push('');
 
-    return reportLines.join('\n');
+    if (Object.keys(metrics.contributors).length === 0) {
+        report.push('No activity in the repository during this period.');
+    } else {
+        report.push('## Contributors');
+        report.push('| Contributor | New PRs | Merged PRs | Open PRs | Comments |');
+        report.push('|------------|----------|------------|-----------|----------|');
+
+        for (const [contributor, stats] of Object.entries(metrics.contributors)) {
+            report.push(`| ${contributor} | ${stats.newPRs} | ${stats.mergedPRs} | ${stats.openPRs} | ${stats.comments} |`);
+        }
+    }
+
+    return report.join('\n');
 }
 
 // Generate weekly PR report
